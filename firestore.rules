@@ -53,15 +53,44 @@ service cloud.firestore {
       return request.resource.data.uid == request.auth.uid;
     }
 
+    // ================= instalacion =================
+    // Documento centinela. Mientras no exista, la plataforma permite crear un
+    // unico administrador desde el asistente de primer arranque. Una vez creado
+    // no se puede modificar ni borrar, asi que la puerta queda cerrada.
+
+    function sinInstalar() {
+      return !exists(/databases/$(database)/documents/config/instalacion);
+    }
+
+    // El mismo lote de escritura debe dejar creado el centinela.
+    function cierraInstalacion() {
+      return getAfter(/databases/$(database)/documents/config/instalacion).data.completada == true;
+    }
+
+    match /config/instalacion {
+      // Se consulta antes de iniciar sesion para saber si falta instalar.
+      allow get: if true;
+      allow create: if logueado() && sinInstalar();
+      allow update, delete: if false;
+    }
+
     // ================= usuarios del sistema =================
-    // El primer administrador se crea a mano desde la consola de Firebase
-    // (la consola ignora estas reglas). Despues, solo un admin crea usuarios.
+    // Despues del primer arranque, solo un admin crea o edita usuarios.
 
     match /usuarios/{uid} {
       allow get: if logueado() && (request.auth.uid == uid || esAdmin());
       allow list: if esAdmin();
 
-      allow create: if esAdmin()
+      allow create: if (
+          esAdmin()
+          || (
+            // Primer administrador: se crea a si mismo y cierra la instalacion.
+            request.auth.uid == uid
+            && sinInstalar()
+            && cierraInstalacion()
+            && request.resource.data.rol == 'admin'
+          )
+        )
         && texto('nombre', 120)
         && request.resource.data.rol in ['admin', 'cajero']
         && request.resource.data.activo is bool;
@@ -78,7 +107,7 @@ service cloud.firestore {
 
     match /config/{doc} {
       allow read: if staff();
-      allow write: if esAdmin();
+      allow write: if esAdmin() && doc != 'instalacion';
     }
 
     // ================= categorias =================

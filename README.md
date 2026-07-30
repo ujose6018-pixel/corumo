@@ -52,8 +52,34 @@ la contrasena sea correcta.
 
 ### 3. Primer administrador
 
-Las reglas solo permiten que un administrador cree usuarios, asi que el primero
-se crea a mano. La consola de Firebase no pasa por las reglas.
+Al abrir la plataforma por primera vez aparece el asistente de instalacion. Pide
+una **clave de instalacion** y con ella crea la cuenta de administrador.
+
+La clave por defecto es `arranque-corumo-2026`. **Cambiala antes de publicar.**
+En `js/firebase.js` solo esta guardada su huella SHA-256, no la clave: quien lea
+el codigo no puede leerla de ahi.
+
+Para poner la tuya, abre la consola del navegador y ejecuta:
+
+```js
+crypto.subtle.digest('SHA-256', new TextEncoder().encode('TU CLAVE'))
+  .then(b => console.log([...new Uint8Array(b)].map(x => x.toString(16).padStart(2,'0')).join('')))
+```
+
+Pega el resultado en `SETUP_KEY_HASH` dentro de `js/firebase.js`.
+
+El asistente aparece una sola vez. Al terminar crea el documento
+`config/instalacion`, que no se puede modificar ni borrar, y desde ese momento
+las reglas ya no permiten crear administradores sin ser administrador.
+
+> **Lo que la huella si protege y lo que no.** Evita que alguien que encuentre la
+> URL antes que tu se cree el administrador. No es cifrado: si eliges una clave
+> corta o previsible, se puede sacar por fuerza bruta. Usa una frase larga y
+> completa la instalacion apenas publiques el sitio.
+
+#### Alternativa manual
+
+Si prefieres no usar el asistente, la consola de Firebase no pasa por las reglas.
 
 1. Authentication → Users → **Add user**. Correo: `admin@corumo2.local`,
    contrasena a tu gusto. Copia el **UID**.
@@ -66,8 +92,10 @@ se crea a mano. La consola de Firebase no pasa por las reglas.
    | `rol`    | string  | `admin`         |
    | `activo` | boolean | `true`          |
 
-3. Entra a la plataforma escribiendo solo `admin` como usuario. La app le agrega
-   el dominio `@corumo2.local` automaticamente.
+3. Crea tambien el documento `config/instalacion` con `completada: true` para
+   cerrar el asistente.
+4. Entra escribiendo solo `admin` como usuario. La app le agrega el dominio
+   `@corumo2.local` automaticamente.
 
 > El dominio `.local` sirve para que el personal escriba usuarios cortos en vez
 > de correos. La contra es que el correo de restablecimiento no llega a ninguna
@@ -124,6 +152,12 @@ ni ninguna redireccion.
 
 ## Notas tecnicas
 
+- **No hay contrasenas en el codigo.** Las contrasenas las guarda Firebase
+  Authentication, con hash del lado del servidor. Nada de lo que se publique en
+  el repositorio sirve para iniciar sesion. Cualquier cadena que se pusiera en el
+  JS seria legible para quien abra las herramientas del navegador, por muy
+  ofuscada que estuviera: en un cliente web no existe forma de esconder un
+  secreto de verdad.
 - **La `apiKey` no es un secreto.** Va publica en todo cliente web. La seguridad
   esta en las reglas de Firestore y en Authentication.
 - **Ventas atomicas.** Cada venta corre en `runTransaction`: lee los productos y

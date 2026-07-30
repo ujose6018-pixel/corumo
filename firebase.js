@@ -32,6 +32,16 @@ export const firebaseConfig = {
   appId: '1:905516372088:web:c2f8eb8c4a001e35431d8d'
 };
 
+/**
+ * Huella SHA-256 de la clave de instalacion. Se usa una sola vez, en el primer
+ * arranque, para que un extrano no gane la carrera y se cree el administrador.
+ * No es la contrasena del admin: esa la guarda Firebase Authentication.
+ * Para cambiarla, en la consola del navegador:
+ *   crypto.subtle.digest('SHA-256', new TextEncoder().encode('TU CLAVE'))
+ *     .then(b => console.log([...new Uint8Array(b)].map(x => x.toString(16).padStart(2,'0')).join('')))
+ */
+export const SETUP_KEY_HASH = '131ba158c3d7d9021c3ae05b9175feb99ce1d08789494af36325e4f06eeaaeb2';
+
 /** Dominio interno para que el personal escriba solo su usuario, no un correo largo. */
 export const LOGIN_DOMAIN = 'corumo2.local';
 

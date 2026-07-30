@@ -1,6 +1,7 @@
 import { session, login, logout, watchAuth, loadProfile } from './firebase.js';
 import { api } from './store.js';
 import { h, icon, ICONS, field, input, checkbox, toast, L, dateOnly } from './ui.js';
+import { needsSetup, renderSetup } from './setup.js';
 
 const root = document.getElementById('root');
 
@@ -280,10 +281,23 @@ window.addEventListener('hashchange', () => {
 
 root.replaceChildren(h('div', { class: 'gate' }, h('div', { class: 'gate__art' }, h('div', { class: 'gate__note', text: 'Abriendo la caja…' })), h('div', { class: 'gate__panel' })));
 
+let setupChecked = false;
+
+async function gateOrSetup() {
+  if (!setupChecked) {
+    setupChecked = true;
+    if (await needsSetup()) {
+      renderSetup(root, () => renderShell());
+      return;
+    }
+  }
+  renderGate();
+}
+
 watchAuth(async (fbUser) => {
   if (!fbUser) {
     session.user = null;
-    renderGate();
+    gateOrSetup();
     return;
   }
   if (session.user) return;
@@ -292,7 +306,7 @@ watchAuth(async (fbUser) => {
     renderShell();
   } catch (err) {
     await logout();
-    renderGate();
+    await gateOrSetup();
     toast(err.message, 'error');
   }
 });

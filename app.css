@@ -32,6 +32,10 @@
 
 * { box-sizing: border-box; }
 
+/* El atributo hidden debe ganarle a cualquier display de clase.
+   Sin esto la capa modal queda invisible sobre la pantalla y bloquea el mouse. */
+[hidden] { display: none !important; }
+
 html, body { height: 100%; }
 
 body {
