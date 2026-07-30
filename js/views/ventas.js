@@ -1,5 +1,5 @@
 import { api, session } from '../store.js';
-import { h, L, qty, field, input, select, table, card, tag, toast, modal, dateTime, todayISO, confirmAction } from '../ui.js';
+import { h, L, qty, field, input, select, table, card, tag, toast, modal, dateTime, todayISO, confirmAction, debounce } from '../ui.js';
 
 export const meta = { title: 'Ventas', subtitle: 'Consulta, revisa y anula movimientos de caja' };
 
@@ -169,12 +169,4 @@ function statBox(label, value, foot, tone) {
     h('div', { class: 'stat__value', text: value }),
     foot ? h('div', { class: 'stat__foot', text: foot }) : null
   );
-}
-
-export function debounce(fn, wait = 280) {
-  let t;
-  return (...args) => {
-    clearTimeout(t);
-    t = setTimeout(() => fn(...args), wait);
-  };
 }

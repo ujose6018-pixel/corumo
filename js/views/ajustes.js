@@ -66,6 +66,15 @@ export async function render(host) {
       h('div', { style: 'margin-top:12px' }, h('button', { class: 'btn btn--ghost btn--sm', text: 'Cambiar contrasena', onClick: changePass }))
     ]),
     admin
+      ? card('Mantenimiento', null, [
+          h('p', {
+            style: 'margin:0 0 12px',
+            text: 'Si importaste trabajadores antes de que existiera el buscador, este proceso les agrega los campos que necesita la busqueda por codigo y por nombre. Se corre una sola vez y se puede repetir sin riesgo.'
+          }),
+          h('button', { class: 'btn btn--ghost btn--sm', text: 'Preparar trabajadores para busqueda', onClick: reindexar })
+        ])
+      : null,
+    admin
       ? card('Datos de prueba', null, [
           h('p', {
             style: 'margin:0 0 12px',
@@ -108,6 +117,21 @@ export async function render(host) {
     } catch (err) {
       toast(err.code === 'auth/invalid-credential' ? 'La contrasena actual no coincide' : err.message, 'error');
     }
+  }
+
+  function reindexar() {
+    confirmAction({
+      title: 'Preparar trabajadores',
+      message: 'Se recorre la lista de trabajadores y se completan los campos de busqueda. En planillas grandes puede tardar un par de minutos; no cierres la pestana.',
+      confirmLabel: 'Empezar',
+      onConfirm: async () => {
+        const res = await api.reindexEmployees();
+        const base = res.corregidos
+          ? `${res.corregidos} de ${res.revisados} trabajadores quedaron listos para buscar.`
+          : `Los ${res.revisados} trabajadores ya estaban al dia.`;
+        toast(res.omitidos ? `${base} ${res.omitidos} no se pudieron actualizar.` : base, res.omitidos ? 'warn' : 'ok');
+      }
+    });
   }
 
   function loadSample() {

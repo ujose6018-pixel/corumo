@@ -1,6 +1,5 @@
 import { api, session } from '../store.js';
-import { h, L, qty, field, input, select, checkbox, table, card, tag, toast, modal, confirmAction } from '../ui.js';
-import { debounce } from './ventas.js';
+import { h, L, qty, field, input, select, checkbox, table, card, tag, toast, modal, confirmAction , debounce} from '../ui.js';
 
 export const meta = { title: 'Productos y precios', subtitle: 'Catalogo de la cafeteria' };
 

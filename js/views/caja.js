@@ -1,5 +1,5 @@
 import { api } from '../store.js';
-import { h, icon, ICONS, L, qty, field, input, select, toast, modal, card } from '../ui.js';
+import { h, icon, ICONS, L, qty, field, input, select, toast, modal, searchPicker, codeLookup } from '../ui.js';
 
 export const meta = { title: 'Caja', subtitle: 'Cobra, carga a cuenta y entrega el vale' };
 
@@ -16,12 +16,11 @@ export async function render(host) {
   const state = {
     products: [],
     categories: [],
-    employees: [],
+    employee: null,
     cart: new Map(),
     category: 'all',
     search: '',
     method: 'efectivo',
-    employeeId: '',
     received: '',
     note: '',
     meal: currentMeal()
@@ -29,7 +28,9 @@ export async function render(host) {
 
   const grid = h('div', { class: 'tiles' });
   const catnav = h('div', { class: 'catnav' });
-  const valeHost = h('aside');
+  const valeHost = h('aside', { class: 'pos-vale' });
+  const valeBackdrop = h('div', { class: 'pos-vale__backdrop', onClick: () => cerrarVale() });
+  const valeBar = h('div', { class: 'vale-bar' });
   const searchBox = input({ placeholder: 'Nombre o codigo del producto', autocomplete: 'off' });
   searchBox.addEventListener('input', () => {
     state.search = searchBox.value.trim().toLowerCase();
@@ -52,7 +53,8 @@ export async function render(host) {
         )
       ),
       valeHost
-    )
+    ),
+    valeBar
   );
 
   function mealSelect() {
@@ -63,14 +65,9 @@ export async function render(host) {
     return el;
   }
 
-  const [products, categories, employees] = await Promise.all([
-    api.products(),
-    api.categories(),
-    api.employees()
-  ]);
+  const [products, categories] = await Promise.all([api.products(), api.categories()]);
   state.products = products;
   state.categories = categories.filter((c) => c.active);
-  state.employees = employees;
 
   drawCatnav();
   drawTiles();
@@ -167,10 +164,77 @@ export async function render(host) {
     return Math.round(sum * 100) / 100;
   }
 
+  // Declaradas como funciones: drawVale() corre antes de llegar a esta linea.
+  function abrirVale() {
+    valeHost.classList.add('is-open');
+  }
+
+  function cerrarVale() {
+    valeHost.classList.remove('is-open');
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') cerrarVale();
+  });
+
+  const describir = (e) => ({
+    title: `${e.code} · ${e.full_name}`,
+    subtitle: [e.department, e.balance > 0 ? `debe ${L(e.balance)}` : 'sin saldo'].filter(Boolean).join(' — ')
+  });
+
+  // Se crea una sola vez: si se recreara en cada redibujado, perderia el foco
+  // mientras el cajero escribe el codigo.
+  const picker = codeLookup({
+    placeholder: 'Codigo de empleado',
+    lookup: (code) => api.employeeByCode(code),
+    renderItem: describir,
+    wideLabel: 'Buscarlo por nombre',
+    onWideSearch: buscarPorNombre,
+    onSelect: (e) => {
+      if (!e.active) {
+        toast(`La cuenta de ${e.full_name} esta inhabilitada`, 'warn');
+      }
+      state.employee = e;
+      drawVale();
+    },
+    onClear: () => {
+      state.employee = null;
+      drawVale();
+    }
+  });
+
+  /**
+   * Salida de emergencia: si el cajero no tiene el codigo a mano, aqui si se
+   * busca por nombre. Va en una ventana aparte para dejar claro que es la
+   * consulta cara y que el camino normal es el codigo.
+   */
+  function buscarPorNombre() {
+    const amplio = searchPicker({
+      placeholder: 'Nombre o apellido del trabajador',
+      hint: 'Escribe el nombre como empieza, o un apellido completo',
+      search: (term) => api.searchEmployees(term, { limit: 20 }),
+      renderItem: describir,
+      onSelect: (e) => {
+        dialog.close();
+        picker.set(e);
+      }
+    });
+
+    const dialog = modal({
+      title: 'Buscar trabajador',
+      body: [
+        h('div', { class: 'hint', text: 'Al elegirlo queda cargado en el vale. La proxima vez, su codigo lo encuentra de una.' }),
+        amplio.element
+      ],
+      footer: [h('button', { class: 'btn btn--ghost', text: 'Cancelar', onClick: () => dialog.close() })]
+    });
+    amplio.focus();
+  }
+
   function drawVale() {
     const lines = [...state.cart.values()];
     const sum = total();
-    const employee = state.employees.find((e) => String(e.id) === String(state.employeeId));
+    const employee = state.employee;
 
     const linesHost = h('div', { class: 'vale__lines' });
     if (!lines.length) {
@@ -241,21 +305,7 @@ export async function render(host) {
       const changeNote = h('div', { class: 'hint mono', text: changeText() });
       payment.append(field('Efectivo recibido', recv), changeNote);
     } else {
-      const picker = select(
-        [
-          { value: '', label: 'Elige al trabajador' },
-          ...state.employees
-            .filter((e) => e.active)
-            .map((e) => ({ value: e.id, label: `${e.code} — ${e.full_name}`, selected: String(e.id) === String(state.employeeId) }))
-        ],
-        {
-          onChange: (e) => {
-            state.employeeId = e.target.value;
-            drawVale();
-          }
-        }
-      );
-      payment.append(field('Trabajador', picker));
+      payment.append(field('Trabajador', picker.element));
 
       if (employee) {
         const nuevo = employee.balance + sum;
@@ -312,7 +362,12 @@ export async function render(host) {
         'div',
         { class: 'vale__head' },
         h('h2', { text: 'Vale' }),
-        h('span', { class: 'vale__folio', text: state.meal.toLowerCase() })
+        h('span', { class: 'vale__folio', text: state.meal.toLowerCase() }),
+        h('button', {
+          class: 'btn btn--ghost btn--sm vale__cerrar',
+          text: 'Cerrar',
+          onClick: cerrarVale
+        })
       ),
       linesHost,
       h(
@@ -345,7 +400,22 @@ export async function render(host) {
       )
     );
 
-    valeHost.replaceChildren(vale);
+    valeHost.replaceChildren(valeBackdrop, vale);
+
+    const unidades = lines.reduce((a, b) => a + b.qty, 0);
+    valeBar.replaceChildren(
+      h(
+        'div',
+        { class: 'vale-bar__info' },
+        h('span', { text: lines.length ? `${qty(unidades)} articulos` : 'vale vacio' }),
+        h('strong', { text: L(sum) })
+      ),
+      h('button', {
+        class: 'btn btn--primary',
+        text: lines.length ? 'Ver vale y cobrar' : 'Abrir vale',
+        onClick: abrirVale
+      })
+    );
   }
 
   /** El trabajador paga parte de su cuenta antes de que se liquide la planilla. */
@@ -371,7 +441,7 @@ export async function render(host) {
           onClick: async () => {
             try {
               await api.addPayment(employee.id, { amount: Number(amount.value), note: note.value.trim() });
-              state.employees = await api.employees();
+              state.employee = await api.employee(employee.id);
               dialog.close();
               toast(`Abono registrado. ${employee.full_name} queda con saldo actualizado.`);
               drawVale();
@@ -392,25 +462,34 @@ export async function render(host) {
   }
 
   async function submit() {
+    // El boton se deshabilita, pero la comprobacion va aqui tambien: el estado
+    // puede cambiar entre que se dibuja el vale y que alguien toca el boton.
+    if (!state.cart.size) return;
+    if (state.method === 'credito' && !state.employee) {
+      toast('Busca y elige al trabajador antes de cargar a cuenta', 'warn');
+      return;
+    }
+
     const payload = {
       method: state.method,
       meal: state.meal,
       note: state.note,
       items: [...state.cart.values()].map((l) => ({ product_id: l.product.id, qty: l.qty }))
     };
-    if (state.method === 'credito') payload.employee_id = Number(state.employeeId);
+    if (state.method === 'credito') payload.employee_id = state.employee.id;
     else if (state.received !== '') payload.received = Number(state.received);
 
     try {
       const sale = await api.createSale(payload);
       state.products = await api.products();
-      state.employees = await api.employees();
       state.cart.clear();
       state.received = '';
       state.note = '';
-      state.employeeId = '';
+      state.employee = null;
+      picker.clear();
       drawTiles();
       drawVale();
+      cerrarVale();
       showReceipt(sale);
     } catch (err) {
       toast(err.message, 'error');
