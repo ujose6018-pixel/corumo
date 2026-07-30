@@ -19,8 +19,12 @@ por CDN. Se sube tal cual a GitHub Pages.
   en la bitacora.
 - **Trabajadores.** Cuentas de credito con limite, saldo y estado de cuenta.
   Abonos en efectivo y ajustes manuales.
-- **Planilla.** Periodos quincenales. Al cerrar uno, se aplica el descuento a
-  cada trabajador, los saldos quedan en cero y se descarga el CSV.
+- **Planilla.** Cortes **semanales, quincenales o mensuales** segun lo que
+  configures. Al cerrar uno se aplica el descuento a cada trabajador, los saldos
+  quedan en cero, se descarga el CSV y se abre solo el corte siguiente.
+- **Abonos anticipados.** El trabajador puede pagar parte o todo su consumo en
+  caja antes de que se liquide su planilla. El abono baja lo que se le descuenta
+  en el corte y queda en su estado de cuenta.
 - **Reportes.** Corte por rango de fechas, venta por hora y por categoria,
   lo mas vendido y productos por reponer.
 - **Perfiles.** El cajero cobra, maneja inventario, precios y cuentas de
@@ -76,9 +80,38 @@ Entra como administrador y ve a:
 
 1. **Ajustes** → configura empresa, impuesto y limite sugerido. Si quieres
    probar rapido, usa **Cargar catalogo de ejemplo**.
-2. **Planilla** → **Abrir periodo**. Mientras no haya un periodo abierto, el
-   cajero no puede cargar consumos a cuenta.
-3. **Usuarios del sistema** → crea las cuentas de los cajeros.
+2. **Ajustes** → **Ciclo de cobro**: semanal, quincenal o mensual. De esto
+   dependen las fechas que se proponen en cada corte.
+3. **Planilla** → **Abrir corte**. Las fechas vienen prellenadas segun el ciclo.
+   Mientras no haya un corte abierto, el cajero no puede cargar consumos a cuenta.
+4. **Usuarios del sistema** → crea las cuentas de los cajeros.
+
+## Ciclos de cobro y abonos
+
+El ciclo se define en Ajustes y determina como se calcula cada corte:
+
+| Ciclo      | Corte                                   |
+|------------|-----------------------------------------|
+| Semanal    | Lunes a domingo                         |
+| Quincenal  | Del 1 al 15 y del 16 al fin de mes      |
+| Mensual    | Del primero al ultimo dia del mes       |
+
+Cambiar el ciclo no toca los cortes ya creados: afecta las fechas que se
+proponen del siguiente en adelante. Si una quincena tuvo dias raros, puedes
+editar las fechas a mano al abrir el corte.
+
+Al cerrar un corte, la plataforma abre el siguiente sin que tengas que hacer
+nada. Si prefieres abrirlos uno por uno, cambia esa opcion en Ajustes.
+
+**Abono antes de la liquidacion.** En la caja, el cajero pone la forma de pago en
+*A cuenta*, elige al trabajador y aparece **Abonar a la cuenta** con su saldo
+pendiente. No hace falta que haya productos en el vale. Tambien esta en
+Trabajadores → Estado de cuenta.
+
+El abono no borra el consumo: entra como movimiento aparte con signo contrario.
+En el reporte de planilla el trabajador aparece con sus cargos, sus abonos y la
+diferencia, que es lo unico que se descuenta. Si abona todo, su fila desaparece
+del reporte porque no queda nada por descontar.
 
 ## Subir a GitHub Pages
 
