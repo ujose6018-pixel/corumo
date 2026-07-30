@@ -1,0 +1,25 @@
+{
+  "name": "Cafeteria — caja y credito",
+  "short_name": "Caja",
+  "description": "Punto de venta de cafeteria con credito descontado de planilla.",
+  "lang": "es-HN",
+  "dir": "ltr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#14171a",
+  "theme_color": "#14171a",
+  "categories": ["business", "productivity", "finance"],
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "./icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Cobrar", "short_name": "Caja", "url": "./index.html#caja", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Trabajadores", "url": "./index.html#trabajadores" },
+    { "name": "Reportes del dia", "url": "./index.html#reportes" }
+  ]
+}

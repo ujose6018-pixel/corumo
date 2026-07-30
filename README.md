@@ -112,6 +112,115 @@ Entra como administrador y ve a:
    Mientras no haya un corte abierto, el cajero no puede cargar consumos a cuenta.
 4. **Usuarios del sistema** → crea las cuentas de los cajeros.
 
+## Planillas grandes
+
+La plataforma esta pensada para listas de miles de trabajadores.
+
+**El codigo de empleado es el identificador del documento.** Es decir, el
+trabajador `E-1001` vive en `trabajadores/E-1001`. Eso trae tres cosas:
+
+- La caja lo consulta con una **lectura directa por clave**, sin pasar por
+  ningun indice. Es lo mas barato y lo mas rapido que ofrece Firestore.
+- **Firestore garantiza que no haya codigos repetidos.** No depende de que la
+  aplicacion recuerde comprobarlo: dos documentos no pueden tener el mismo
+  identificador, y las reglas exigen que el campo `codigo` coincida con el.
+- Los movimientos y las ventas quedan colgando de un identificador legible, asi
+  que la base se puede leer a ojo desde la consola de Firebase.
+
+> **El codigo queda fijo.** Cambiarlo significaria mover al trabajador a otro
+> documento y dejar su historial colgando del anterior. Por eso el campo no se
+> puede editar: si alguien fue registrado con el codigo equivocado, se da de baja
+> esa cuenta y se crea otra. Tenlo en cuenta al definir el formato antes de
+> importar la planilla.
+
+**En la caja no hay lista desplegable ni busqueda al teclear.** El cajero
+escribe el codigo y confirma con Enter o con el boton. Mientras escribe no se
+consulta nada.
+
+Los trabajadores ya consultados quedan en memoria durante la sesion, asi que
+alguien que vuelve a la caja en el mismo turno no cuesta ninguna lectura. Su
+ficha se descarta en cuanto cambia su saldo, para que nunca se cobre contra un
+saldo viejo.
+
+Si el cajero no tiene el codigo a mano, hay un enlace para buscar por nombre.
+Esa si es la consulta cara —tres consultas por prefijo y palabra— y por eso vive
+en una ventana aparte: el camino normal es el codigo.
+
+**Nunca se lee la coleccion completa.** La pantalla de Trabajadores pagina de
+cincuenta en cincuenta. El total de la cartera se calcula con una agregacion en
+el servidor, asi que da igual si hay diez cuentas o diez mil.
+
+### Lo que cuesta cada cosa
+
+| Accion | Lecturas |
+|--------|----------|
+| Abrir la caja | catalogo y categorias, nada de trabajadores |
+| Cobrar en efectivo | ninguna consulta de trabajador |
+| Cargar a cuenta con el codigo | 1 (lectura directa) |
+| El mismo trabajador otra vez en el turno | 0 |
+| Buscar por nombre | hasta 3 consultas de 20 documentos |
+| Listar trabajadores | 50 por pagina |
+| Cartera total | 1 agregacion |
+
+### Limites de la busqueda
+
+Firestore no tiene busqueda de texto completo, y conviene saber que significa:
+
+- En caja el codigo se busca **exacto**: hay que escribirlo completo. Es lo que
+  permite que cueste una sola lectura.
+- En la busqueda por nombre, el codigo si acepta prefijo: `E-10` encuentra
+  `E-1001` y `E-1010`.
+- El nombre se busca por como empieza: `ANA LUCIA` encuentra a Ana Lucia
+  Martinez, pero `LUCIA` sola no la encuentra por esa via.
+- Para eso esta la busqueda por palabra: escribir `MARTINEZ` completo si la
+  encuentra, porque cada nombre se guarda tambien partido en palabras.
+- No hay tolerancia a errores de tecleo. `MARTINES` no encuentra a `MARTINEZ`.
+
+Si algun dia necesitas busqueda difusa de verdad, eso se resuelve con un
+servicio aparte como Algolia o Typesense, no con Firestore.
+
+### Como se normaliza el codigo
+
+Antes de usarlo como identificador se pasa a mayusculas, se le quitan acentos y
+se cambian las barras por guiones, porque una barra en un identificador de
+Firestore separa colecciones. Asi que `e-1001` y `E-1001` son el mismo
+trabajador, y `E/1001` se guarda como `E-1001`.
+
+Se rechazan los codigos vacios, los de mas de cien caracteres, `.`, `..` y los
+que empiezan y terminan con dos guiones bajos, que Firestore reserva.
+
+Un detalle menor: al quitar acentos, la ene se vuelve N. Si tus codigos son
+alfanumericos, como suele ser, no te afecta.
+
+### Cargar la planilla
+
+En Trabajadores → **Importar lista** se pega el contenido de un CSV o se sube el
+archivo. Una linea por persona:
+
+```
+E-1001;Ana Lucia Martinez;Produccion;1500
+E-1002;Carlos Rene Fuentes;Bodega;1500
+```
+
+Se acepta punto y coma, coma o tabulacion. El departamento y el limite pueden ir
+vacios. La escritura va en lotes de cuatrocientos, y la comprobacion de cuales
+ya existen se hace de treinta en treinta, no uno por uno.
+
+Al terminar avisa cuantos se crearon, cuantos ya existian y cuantas lineas se
+descartaron por no traer codigo o nombre.
+
+> **Si ya cargaste trabajadores antes de este cambio**, esos documentos tienen
+> identificadores automaticos y la caja no los va a encontrar por codigo. Estando
+> todavia en pruebas, lo limpio es borrar la coleccion `trabajadores` desde la
+> consola de Firebase y volver a importarla. Si ya tienes consumos registrados
+> contra esas cuentas, no la borres: hay que migrar tambien los movimientos.
+
+### Si ya tenias trabajadores cargados
+
+Los registros creados antes de esta version no tienen los campos que usa el
+buscador. En **Ajustes → Mantenimiento** hay un boton que los completa. Se corre
+una sola vez, se puede repetir sin riesgo, y avisa si algun registro quedo fuera.
+
 ## Ciclos de cobro y abonos
 
 El ciclo se define en Ajustes y determina como se calcula cada corte:
@@ -138,6 +247,61 @@ El abono no borra el consumo: entra como movimiento aparte con signo contrario.
 En el reporte de planilla el trabajador aparece con sus cargos, sus abonos y la
 diferencia, que es lo unico que se descuenta. Si abona todo, su fila desaparece
 del reporte porque no queda nada por descontar.
+
+## Aplicacion instalable
+
+La plataforma es una PWA: se instala como aplicacion en el telefono, la tableta
+o la computadora, y abre en su propia ventana sin barra del navegador.
+
+- **Android / Chrome / Edge:** aparece un boton de descarga en la barra superior
+  cuando el navegador la considera instalable. Tambien esta en el menu del
+  navegador, como *Instalar aplicacion*.
+- **iPhone / iPad:** Safari no muestra ese boton. Hay que usar Compartir →
+  *Agregar a pantalla de inicio*.
+- **Escritorio:** el mismo boton, o el icono de instalar en la barra de
+  direcciones.
+
+Requisitos: la PWA solo se instala sobre **HTTPS**. GitHub Pages ya lo da.
+
+### Que funciona sin conexion y que no
+
+El armazon de la aplicacion se guarda en cache, y Firestore mantiene una copia
+local en IndexedDB. Con eso la caja **abre y deja consultar** catalogo, precios,
+cuentas y ventas recientes aunque se caiga el wifi.
+
+**Cobrar si necesita conexion.** Cada venta corre como transaccion contra el
+servidor: es la unica forma de garantizar que no se venda el mismo refresco dos
+veces ni se pase un trabajador de su limite. Una transaccion no se puede resolver
+contra la cache local, asi que sin red la venta no se cierra. La plataforma avisa
+en cuanto se pierde la conexion.
+
+Si la cafeteria tiene wifi malo, la salida sensata es un telefono con datos
+moviles para la caja, no dejar que el cobro se guarde a ciegas.
+
+### Actualizaciones
+
+Cuando subes cambios al repositorio, el service worker descarga la version nueva
+por detras y avisa. **La version nueva entra al cerrar y volver a abrir la
+aplicacion**, no de golpe: una recarga a media venta borraria el vale que el
+cajero tiene en pantalla.
+
+Si cambias archivos y quieres forzar la renovacion en todos los dispositivos,
+sube el numero de `VERSION` al inicio de `sw.js`.
+
+## En el telefono
+
+La interfaz se reacomoda sola:
+
+- El panel lateral se vuelve un cajon que se abre con el boton de la barra
+  superior y se cierra tocando fuera o con Escape.
+- En la caja, el vale sube desde abajo. Siempre queda visible una barra con el
+  total y el numero de articulos, para no perder de vista lo que se esta
+  cobrando.
+- Las tablas dejan de tener scroll horizontal: cada fila se apila como tarjeta
+  con sus etiquetas.
+- Los formularios usan letra de 16 px, que es lo que evita que iOS haga zoom al
+  tocar un campo.
+- Se respetan las areas seguras del notch y de la barra inferior.
 
 ## Subir a GitHub Pages
 
@@ -180,6 +344,9 @@ ni ninguna redireccion.
 ```
 index.html
 app.css                    diseno completo, un solo archivo
+manifest.webmanifest       datos de la aplicacion instalable
+sw.js                      cache del armazon para abrir sin conexion
+icons/                     iconos de la aplicacion
 js/
   firebase.js              configuracion, sesion, bitacora
   store.js                 acceso a Firestore y transacciones

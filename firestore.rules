@@ -144,6 +144,10 @@ service cloud.firestore {
     }
 
     // ================= trabajadores con credito =================
+    // El identificador del documento es el codigo de empleado. Con eso Firestore
+    // impide dos trabajadores con el mismo codigo, y la caja lo consulta con una
+    // lectura directa.
+    //
     // Regla clave: el saldo no puede pasar del limite autorizado.
     // limite en 0 significa sin limite.
 
@@ -151,13 +155,17 @@ service cloud.firestore {
       allow read: if staff();
 
       allow create: if staff()
-        && texto('codigo', 30)
+        // El codigo guardado debe ser el mismo identificador del documento.
+        && request.resource.data.codigo == id
+        && texto('codigo', 100)
         && texto('nombre', 120)
         && num('limite') && request.resource.data.limite >= 0
         && num('saldo') && request.resource.data.saldo == 0
         && request.resource.data.activo is bool;
 
       allow update: if staff()
+        // El codigo es la identidad del trabajador: no se cambia nunca.
+        && request.resource.data.codigo == resource.data.codigo
         && num('saldo')
         && request.resource.data.saldo >= 0
         && num('limite') && request.resource.data.limite >= 0
