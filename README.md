@@ -44,7 +44,16 @@ consola de Firebase muestra un enlace directo para crearlo con un clic.
 
 ### 2. Authentication
 
-Authentication → **Sign-in method** → activa **Correo electronico/contrasena**.
+Authentication → **Sign-in method** → **Correo electronico/contrasena** →
+activar. Deja apagado el enlace por correo (passwordless); no se usa.
+
+El personal inicia sesion con un usuario corto, no con un correo. El dominio
+interno se define en `LOGIN_DOMAIN` dentro de `js/firebase.js` y viene como
+`corumo2.local`. Ese dominio no existe de verdad, y esa es la unica contra:
+el correo de "olvide mi contrasena" no llega a ningun lado. Para reponer una
+clave, el administrador entra a Usuarios del sistema y usa **Enviar
+restablecimiento**, que solo sirve si esa persona esta dada de alta con un
+correo real de la empresa.
 
 Authentication → **Settings** → **Authorized domains** → agrega tu dominio de
 GitHub Pages, por ejemplo `tuusuario.github.io`. Sin esto el login falla aunque
@@ -52,55 +61,44 @@ la contrasena sea correcta.
 
 ### 3. Primer administrador
 
-Al abrir la plataforma por primera vez aparece el asistente de instalacion. Pide
-una **clave de instalacion** y con ella crea la cuenta de administrador.
+No hay que crear nada a mano. Abre la plataforma y la pantalla de acceso te
+recibe en modo instalacion: **el usuario y la contrasena que escribas ahi quedan
+como la cuenta de administrador**, y con esas mismas credenciales entras de ahi
+en adelante.
 
-La clave por defecto es `arranque-corumo-2026`. **Cambiala antes de publicar.**
-En `js/firebase.js` solo esta guardada su huella SHA-256, no la clave: quien lea
-el codigo no puede leerla de ahi.
+Escribes solo el usuario, sin correo. La plataforma lo guarda internamente como
+`usuario@corumo2.local` porque Firebase Authentication trabaja con correos, pero
+eso el personal nunca lo ve. Si prefieres correos reales de la empresa, tambien
+los acepta: el campo reconoce cualquier texto con arroba y lo usa tal cual.
 
-Para poner la tuya, abre la consola del navegador y ejecuta:
+Al terminar se crea el documento `config/instalacion`, que las reglas no dejan
+modificar ni borrar. Desde ese momento la pantalla vuelve a ser un login normal
+y solo un administrador puede dar de alta usuarios.
 
-```js
-crypto.subtle.digest('SHA-256', new TextEncoder().encode('TU CLAVE'))
-  .then(b => console.log([...new Uint8Array(b)].map(x => x.toString(16).padStart(2,'0')).join('')))
-```
+> **Cierra la puerta pronto.** Entre que publicas el sitio y haces ese primer
+> ingreso, cualquiera que abra la URL puede quedarse con la cuenta de
+> administrador. Haz el primer login apenas termines de desplegar.
+>
+> Si necesitas mas margen, define una clave de instalacion: en `js/firebase.js`
+> pon en `SETUP_KEY_HASH` la huella SHA-256 de una frase tuya. La pantalla de
+> primer ingreso pedira esa frase ademas de las credenciales. Para generar la
+> huella, en la consola del navegador:
+>
+> ```js
+> crypto.subtle.digest('SHA-256', new TextEncoder().encode('TU FRASE'))
+>   .then(b => console.log([...new Uint8Array(b)].map(x => x.toString(16).padStart(2,'0')).join('')))
+> ```
+>
+> La huella no es reversible, asi que quien lea el codigo no puede sacar la
+> frase. Pero si eliges algo corto o previsible, se saca por fuerza bruta: usa
+> una frase larga.
 
-Pega el resultado en `SETUP_KEY_HASH` dentro de `js/firebase.js`.
+#### Si prefieres hacerlo a mano
 
-El asistente aparece una sola vez. Al terminar crea el documento
-`config/instalacion`, que no se puede modificar ni borrar, y desde ese momento
-las reglas ya no permiten crear administradores sin ser administrador.
-
-> **Lo que la huella si protege y lo que no.** Evita que alguien que encuentre la
-> URL antes que tu se cree el administrador. No es cifrado: si eliges una clave
-> corta o previsible, se puede sacar por fuerza bruta. Usa una frase larga y
-> completa la instalacion apenas publiques el sitio.
-
-#### Alternativa manual
-
-Si prefieres no usar el asistente, la consola de Firebase no pasa por las reglas.
-
-1. Authentication → Users → **Add user**. Correo: `admin@corumo2.local`,
-   contrasena a tu gusto. Copia el **UID**.
-2. Firestore → coleccion `usuarios` → documento con **ese UID exacto** como ID:
-
-   | Campo    | Tipo    | Valor           |
-   |----------|---------|-----------------|
-   | `usuario`| string  | `admin`         |
-   | `nombre` | string  | `Administrador` |
-   | `rol`    | string  | `admin`         |
-   | `activo` | boolean | `true`          |
-
-3. Crea tambien el documento `config/instalacion` con `completada: true` para
-   cerrar el asistente.
-4. Entra escribiendo solo `admin` como usuario. La app le agrega el dominio
-   `@corumo2.local` automaticamente.
-
-> El dominio `.local` sirve para que el personal escriba usuarios cortos en vez
-> de correos. La contra es que el correo de restablecimiento no llega a ninguna
-> parte. Si quieres que el "olvide mi contrasena" funcione, da de alta a la gente
-> con su correo real de la empresa: la pantalla de acceso acepta las dos formas.
+La consola de Firebase no pasa por las reglas, asi que ahi puedes crear el
+usuario en Authentication, copiar su UID, crear `usuarios/{UID}` con
+`usuario`, `nombre`, `rol: "admin"` y `activo: true`, y ademas
+`config/instalacion` con `completada: true` para cerrar el modo instalacion.
 
 ### 4. Arranque
 
