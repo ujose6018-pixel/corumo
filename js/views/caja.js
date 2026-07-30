@@ -160,11 +160,12 @@ export async function render(host) {
     drawVale();
   }
 
-  const total = () => {
+  // Declarada como funcion, no como const: drawVale() corre antes de esta linea.
+  function total() {
     let sum = 0;
     for (const { product, qty: q } of state.cart.values()) sum += product.price * q;
     return Math.round(sum * 100) / 100;
-  };
+  }
 
   function drawVale() {
     const lines = [...state.cart.values()];
