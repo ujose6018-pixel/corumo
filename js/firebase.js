@@ -14,7 +14,10 @@ import {
   createUserWithEmailAndPassword
 } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js';
 import {
+  initializeFirestore,
   getFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   doc,
   getDoc,
   setDoc,
@@ -50,7 +53,21 @@ export const LOGIN_DOMAIN = 'corumo2.local';
 
 export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const dbf = getFirestore(app);
+/**
+ * Cache persistente en IndexedDB: la plataforma abre y muestra catalogo, precios
+ * y cuentas aunque el wifi se caiga. Ojo: las ventas usan transacciones, y una
+ * transaccion necesita servidor. Sin conexion se puede consultar, no cobrar.
+ */
+export const dbf = (() => {
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+    });
+  } catch {
+    // Navegador sin IndexedDB o en modo privado.
+    return getFirestore(app);
+  }
+})();
 
 const REMEMBER_KEY = 'cafeteria.usuario';
 

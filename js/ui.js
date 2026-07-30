@@ -208,6 +208,21 @@ export function table(headers, rows, emptyMessage = 'Sin registros todavia') {
   if (!rows.length) {
     return h('div', { class: 'empty' }, h('strong', { text: 'Nada por aqui' }), h('div', { text: emptyMessage }));
   }
+
+  // En pantallas angostas cada fila se apila como tarjeta y necesita saber que
+  // columna es cada celda. Se etiquetan aqui para no repetirlo en cada vista.
+  const labels = headers.map((head) => (typeof head === 'string' ? head : head.label ?? ''));
+  for (const row of rows) {
+    const cells = [...row.children];
+    if (cells.some((c) => c.hasAttribute('colspan'))) {
+      row.classList.add('grid__resumen');
+      continue;
+    }
+    cells.forEach((cell, i) => {
+      if (labels[i]) cell.dataset.label = labels[i];
+    });
+  }
+
   return h(
     'div',
     { class: 'table-wrap' },
@@ -235,4 +250,326 @@ export function card(title, actions, body, flush = false) {
 
 export function tag(text, tone) {
   return h('span', { class: `tag${tone ? ' tag--' + tone : ''}`, text });
+}
+
+/* ---------- buscador con resultados ---------- */
+
+/**
+ * Campo de busqueda con lista de resultados. Pensado para listas grandes:
+ * nunca carga todo, consulta al escribir y responde al teclado.
+ *
+ * search(term) -> Promise<item[]>
+ * renderItem(item) -> { title, subtitle, aside }
+ */
+export function searchPicker({
+  placeholder = 'Buscar…',
+  minChars = 2,
+  hint = '',
+  search,
+  renderItem,
+  onSelect,
+  onClear
+}) {
+  let items = [];
+  let cursor = -1;
+  let pedido = 0;
+  let elegido = null;
+
+  const campo = h('input', {
+    type: 'search',
+    placeholder,
+    autocomplete: 'off',
+    autocapitalize: 'characters',
+    spellcheck: false,
+    role: 'combobox',
+    'aria-expanded': 'false',
+    'aria-autocomplete': 'list'
+  });
+
+  const lista = h('div', { class: 'picker__list', role: 'listbox', hidden: true });
+  const nota = h('div', { class: 'picker__nota', hidden: !hint, text: hint });
+  const elegidoBox = h('div', { class: 'picker__elegido', hidden: true });
+
+  const caja = h(
+    'div',
+    { class: 'picker' },
+    h('div', { class: 'picker__campo' }, campo, lista),
+    elegidoBox,
+    nota
+  );
+
+  const cerrar = () => {
+    lista.hidden = true;
+    campo.setAttribute('aria-expanded', 'false');
+    cursor = -1;
+  };
+
+  function pintar() {
+    lista.replaceChildren();
+    if (!items.length) {
+      lista.append(h('div', { class: 'picker__vacio', text: 'Sin coincidencias' }));
+    }
+    items.forEach((item, i) => {
+      const info = renderItem(item);
+      lista.append(
+        h(
+          'button',
+          {
+            class: `picker__opcion${i === cursor ? ' is-cursor' : ''}`,
+            type: 'button',
+            role: 'option',
+            'aria-selected': i === cursor ? 'true' : 'false',
+            onMouseEnter: () => {
+              cursor = i;
+              marcar();
+            },
+            onClick: () => elegir(item)
+          },
+          h(
+            'div',
+            { class: 'picker__texto' },
+            h('strong', { text: info.title }),
+            info.subtitle ? h('small', { text: info.subtitle }) : null
+          ),
+          info.aside ? h('span', { class: 'picker__aside', text: info.aside }) : null
+        )
+      );
+    });
+    lista.hidden = false;
+    campo.setAttribute('aria-expanded', 'true');
+  }
+
+  function marcar() {
+    [...lista.querySelectorAll('.picker__opcion')].forEach((el, i) => {
+      el.classList.toggle('is-cursor', i === cursor);
+      if (i === cursor) el.scrollIntoView?.({ block: 'nearest' });
+    });
+  }
+
+  function elegir(item) {
+    elegido = item;
+    const info = renderItem(item);
+    campo.value = '';
+    cerrar();
+    campo.hidden = true;
+    nota.hidden = true;
+    elegidoBox.hidden = false;
+    elegidoBox.replaceChildren(
+      h(
+        'div',
+        { class: 'picker__texto' },
+        h('strong', { text: info.title }),
+        info.subtitle ? h('small', { text: info.subtitle }) : null
+      ),
+      h('button', {
+        class: 'btn btn--ghost btn--sm',
+        type: 'button',
+        text: 'Cambiar',
+        onClick: () => limpiar(true)
+      })
+    );
+    onSelect?.(item);
+  }
+
+  function limpiar(enfocar) {
+    elegido = null;
+    items = [];
+    elegidoBox.hidden = true;
+    elegidoBox.replaceChildren();
+    campo.hidden = false;
+    campo.value = '';
+    nota.hidden = !hint;
+    cerrar();
+    onClear?.();
+    if (enfocar) campo.focus();
+  }
+
+  const buscar = debounce(async (term) => {
+    const mio = ++pedido;
+    try {
+      const res = await search(term);
+      if (mio !== pedido) return; // llego una respuesta vieja
+      items = res;
+      cursor = res.length ? 0 : -1;
+      pintar();
+      marcar();
+    } catch (err) {
+      items = [];
+      lista.replaceChildren(h('div', { class: 'picker__vacio', text: err.message }));
+      lista.hidden = false;
+    }
+  }, 260);
+
+  campo.addEventListener('input', () => {
+    const term = campo.value.trim();
+    if (term.length < minChars) {
+      items = [];
+      cerrar();
+      return;
+    }
+    lista.replaceChildren(h('div', { class: 'picker__vacio', text: 'Buscando…' }));
+    lista.hidden = false;
+    buscar(term);
+  });
+
+  campo.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (lista.hidden || !items.length) return;
+      e.preventDefault();
+      cursor = (cursor + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      marcar();
+    } else if (e.key === 'Enter') {
+      if (!lista.hidden && items[cursor]) {
+        e.preventDefault();
+        elegir(items[cursor]);
+      }
+    } else if (e.key === 'Escape') {
+      if (!lista.hidden) {
+        e.stopPropagation();
+        cerrar();
+      }
+    }
+  });
+
+  campo.addEventListener('blur', () => setTimeout(cerrar, 160));
+
+  return {
+    element: caja,
+    focus: () => (elegido ? null : campo.focus()),
+    clear: () => limpiar(false),
+    get value() {
+      return elegido;
+    }
+  };
+}
+
+/** Espaciador de llamadas: evita consultar en cada tecla. */
+export function debounce(fn, wait = 260) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), wait);
+  };
+}
+
+/**
+ * Campo de codigo con consulta exacta. A diferencia de searchPicker, no
+ * consulta mientras se escribe: espera a Enter o al boton. Es una sola lectura
+ * por busqueda, que es lo que conviene en caja cuando ya se sabe el codigo.
+ *
+ * lookup(code) -> Promise<item | null>
+ */
+export function codeLookup({
+  placeholder = 'Codigo',
+  lookup,
+  renderItem,
+  onSelect,
+  onClear,
+  onWideSearch,
+  wideLabel = 'Buscar por nombre'
+}) {
+  let elegido = null;
+  let buscando = false;
+
+  const campo = h('input', {
+    type: 'text',
+    inputmode: 'text',
+    placeholder,
+    autocomplete: 'off',
+    autocapitalize: 'characters',
+    spellcheck: false,
+    'aria-label': placeholder
+  });
+
+  const boton = h('button', { class: 'btn btn--sm', type: 'button', text: 'Buscar' });
+  const estado = h('div', { class: 'lookup__estado', hidden: true });
+  const elegidoBox = h('div', { class: 'picker__elegido', hidden: true });
+
+  const fila = h('div', { class: 'lookup__fila' }, campo, boton);
+  const caja = h('div', { class: 'lookup' }, fila, elegidoBox, estado);
+
+  // El codigo va siempre en mayusculas: asi se guarda y asi se compara.
+  campo.addEventListener('input', () => {
+    const pos = campo.selectionStart;
+    campo.value = campo.value.toUpperCase();
+    campo.setSelectionRange?.(pos, pos);
+    estado.hidden = true;
+  });
+
+  campo.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      buscar();
+    }
+  });
+
+  boton.addEventListener('click', buscar);
+
+  function aviso(texto, conAlterna) {
+    estado.replaceChildren(
+      h('span', { text: texto }),
+      conAlterna && onWideSearch
+        ? h('button', { class: 'lookup__alterna', type: 'button', text: wideLabel, onClick: () => onWideSearch() })
+        : null
+    );
+    estado.hidden = false;
+  }
+
+  async function buscar() {
+    const code = campo.value.trim();
+    if (!code || buscando) return;
+
+    buscando = true;
+    boton.disabled = true;
+    aviso('Buscando…', false);
+    try {
+      const item = await lookup(code);
+      if (item) elegir(item);
+      else aviso(`No hay ningun trabajador con el codigo ${code}.`, true);
+    } catch (err) {
+      aviso(err.message, true);
+    } finally {
+      buscando = false;
+      boton.disabled = false;
+    }
+  }
+
+  function elegir(item) {
+    elegido = item;
+    const info = renderItem(item);
+    fila.hidden = true;
+    estado.hidden = true;
+    elegidoBox.hidden = false;
+    elegidoBox.replaceChildren(
+      h(
+        'div',
+        { class: 'picker__texto' },
+        h('strong', { text: info.title }),
+        info.subtitle ? h('small', { text: info.subtitle }) : null
+      ),
+      h('button', { class: 'btn btn--ghost btn--sm', type: 'button', text: 'Cambiar', onClick: () => limpiar(true) })
+    );
+    onSelect?.(item);
+  }
+
+  function limpiar(enfocar) {
+    elegido = null;
+    fila.hidden = false;
+    campo.value = '';
+    estado.hidden = true;
+    elegidoBox.hidden = true;
+    elegidoBox.replaceChildren();
+    onClear?.();
+    if (enfocar) campo.focus();
+  }
+
+  return {
+    element: caja,
+    set: elegir,
+    clear: () => limpiar(false),
+    focus: () => (elegido ? null : campo.focus()),
+    get value() {
+      return elegido;
+    }
+  };
 }

@@ -45,6 +45,9 @@ const MODULES = {
 
 const COLLAPSE_KEY = 'cafeteria.panel';
 
+/** Se llena cuando el navegador ofrece instalar la aplicacion. */
+let promptInstalacion = null;
+
 /* ================= acceso ================= */
 
 /**
@@ -253,9 +256,16 @@ async function renderShell(route) {
     icon(ICONS.menu, 18)
   );
 
+  const backdrop = h('div', {
+    class: 'rail-backdrop',
+    'aria-hidden': 'true',
+    onClick: () => shell.classList.remove('is-open')
+  });
+
   const shell = h(
     'div',
     { class: `shell${collapsed ? ' is-collapsed' : ''}` },
+    backdrop,
     h(
       'aside',
       { class: 'rail' },
@@ -297,7 +307,7 @@ async function renderShell(route) {
         { class: 'topbar' },
         toggle,
         h('div', null, title, subtitle),
-        h('div', { class: 'topbar__right' }, periodChip)
+        h('div', { class: 'topbar__right' }, instalarBoton(), periodChip)
       ),
       view
     )
@@ -305,6 +315,10 @@ async function renderShell(route) {
 
   root.replaceChildren(shell);
   shellRefs = { view, title, subtitle, periodChip };
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') shell.classList.remove('is-open');
+  });
 
   loadPeriodChip();
   await mount(active);
@@ -393,3 +407,68 @@ watchAuth(async (fbUser) => {
     toast(err.message, 'error');
   }
 });
+
+/* ================= instalacion y actualizaciones ================= */
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  promptInstalacion = e;
+  for (const b of document.querySelectorAll('.btn-instalar')) b.hidden = false;
+});
+
+window.addEventListener('appinstalled', () => {
+  promptInstalacion = null;
+  for (const b of document.querySelectorAll('.btn-instalar')) b.hidden = true;
+  toast('La caja quedo instalada en este dispositivo');
+});
+
+/** Aparece solo cuando el navegador ofrece instalar y todavia no esta instalada. */
+function instalarBoton() {
+  const yaInstalada = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const boton = h(
+    'button',
+    {
+      class: 'icon-btn btn-instalar',
+      title: 'Instalar en este dispositivo',
+      'aria-label': 'Instalar en este dispositivo',
+      hidden: !promptInstalacion || yaInstalada,
+      onClick: async () => {
+        if (!promptInstalacion) return;
+        promptInstalacion.prompt();
+        const { outcome } = await promptInstalacion.userChoice;
+        if (outcome === 'accepted') boton.hidden = true;
+        promptInstalacion = null;
+      }
+    },
+    icon(ICONS.download, 18)
+  );
+  return boton;
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', async () => {
+    try {
+      const raiz = new URL('../', import.meta.url);
+      const reg = await navigator.serviceWorker.register(new URL('sw.js', raiz), { scope: raiz.pathname });
+
+      // Si hay una version nueva esperando, se avisa en vez de recargar de golpe:
+      // una recarga a media venta perderia el vale que el cajero tiene en pantalla.
+      reg.addEventListener('updatefound', () => {
+        const nuevo = reg.installing;
+        if (!nuevo) return;
+        nuevo.addEventListener('statechange', () => {
+          if (nuevo.state === 'installed' && navigator.serviceWorker.controller) {
+            toast('Hay una version nueva. Se aplica al volver a abrir la caja.', 'warn');
+          }
+        });
+      });
+    } catch {
+      // Sin service worker la plataforma funciona igual, solo que sin modo sin conexion.
+    }
+  });
+}
+
+window.addEventListener('offline', () =>
+  toast('Sin conexion. Puedes consultar, pero no cerrar ventas hasta que vuelva.', 'warn')
+);
+window.addEventListener('online', () => toast('Conexion restablecida'));

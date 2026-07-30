@@ -11,7 +11,12 @@ import {
   orderBy,
   limit as qLimit,
   runTransaction,
-  writeBatch
+  writeBatch,
+  startAfter,
+  documentId,
+  getAggregateFromServer,
+  count,
+  sum
 } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js';
 
 import { dbf, session, log, createLoginAccount, sendReset, changeOwnPassword } from './firebase.js';
@@ -32,6 +37,44 @@ const C = {
 };
 
 const round = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+/** Texto normalizado para buscar: sin acentos, en mayusculas y sin espacios sobrantes. */
+export const clave = (t) =>
+  String(t || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+
+/** Palabras sueltas del nombre, para poder buscar por apellido. */
+const tokens = (nombre) => [...new Set(clave(nombre).split(' ').filter((w) => w.length > 1))].slice(0, 12);
+
+const TOPE = '\uf8ff';
+
+/**
+ * Trabajadores ya consultados en esta sesion. Evita releer al mismo empleado
+ * cuando vuelve a la caja. Se descarta su ficha en cuanto cambia su saldo.
+ */
+const cacheTrabajadores = new Map();
+
+/**
+ * El codigo de empleado es el identificador del documento. Con eso la consulta
+ * en caja es una lectura directa por clave y Firestore garantiza que no haya
+ * dos trabajadores con el mismo codigo.
+ *
+ * A cambio el codigo queda fijo: cambiarlo seria crear otro trabajador y dejar
+ * su historial colgando del anterior. Por eso no se puede editar.
+ */
+export function codigoValido(code) {
+  const id = clave(code).replace(/[\/\\]/g, '-');
+  if (!id) return { ok: false, error: 'Escribe el codigo de empleado.' };
+  if (id.length > 100) return { ok: false, error: 'El codigo no puede pasar de 100 caracteres.' };
+  if (id === '.' || id === '..') return { ok: false, error: 'Ese codigo no es valido.' };
+  if (/^__.*__$/.test(id)) return { ok: false, error: 'El codigo no puede empezar y terminar con dos guiones bajos.' };
+  return { ok: true, id };
+}
+const olvidar = (codigo) => cacheTrabajadores.delete(clave(codigo));
 const nowISO = () => new Date().toISOString();
 const rows = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
@@ -139,7 +182,10 @@ const mapAccountMove = (d) => ({
   created_at: d.fecha,
   folio: d.folio || null,
   period_id: d.periodoId || null,
-  employee_id: d.trabajadorId
+  employee_id: d.trabajadorId,
+  employee: d.trabajadorNombre || '',
+  employee_code: d.trabajadorCodigo || '',
+  department: d.trabajadorDepto || ''
 });
 
 const mapStockMove = (d) => ({
@@ -410,45 +456,157 @@ export const api = {
 
   /* ---------- trabajadores ---------- */
 
+  /**
+   * Lista paginada por nombre. Con miles de registros nunca se trae la
+   * coleccion completa: se piden bloques y el resto se busca por codigo.
+   */
   employees: guard(async (params = {}) => {
-    let list = rows(await getDocs(C.trabajadores)).map(mapEmployee);
-    if (params.active !== 'all') list = list.filter((e) => e.active);
-    if (params.debt === '1') list = list.filter((e) => e.balance > 0.009);
-    if (params.q) {
-      const q = String(params.q).toLowerCase();
-      list = list.filter((e) => (e.code + ' ' + e.full_name + ' ' + e.department).toLowerCase().includes(q));
+    const tope = Number(params.limit) || 50;
+    const clauses = [];
+
+    if (params.debt === '1') {
+      clauses.push(where('saldo', '>', 0.009), orderBy('saldo', 'desc'));
+    } else {
+      clauses.push(orderBy('nombreBusqueda'));
     }
-    return list.sort((a, b) => a.full_name.localeCompare(b.full_name));
+    if (params.after) clauses.push(startAfter(params.after));
+    clauses.push(qLimit(tope));
+
+    let list = rows(await getDocs(query(C.trabajadores, ...clauses))).map(mapEmployee);
+    if (params.active !== 'all') list = list.filter((e) => e.active);
+    return list;
+  }),
+
+  /**
+   * Busqueda por codigo o por nombre. Firestore no tiene busqueda de texto
+   * completo, asi que se hacen tres consultas por prefijo y palabra exacta,
+   * y se unen. Cada una trae pocos documentos, no la coleccion entera.
+   */
+  searchEmployees: guard(async (term, options = {}) => {
+    const q = clave(term);
+    const tope = Number(options.limit) || 25;
+    if (q.length < 2) return [];
+
+    const consultas = [
+      // Por codigo de empleado: es el camino rapido en caja.
+      getDocs(query(C.trabajadores, orderBy('codigo'), where('codigo', '>=', q), where('codigo', '<=', q + TOPE), qLimit(tope))),
+      // Por como empieza el nombre.
+      getDocs(
+        query(
+          C.trabajadores,
+          orderBy('nombreBusqueda'),
+          where('nombreBusqueda', '>=', q),
+          where('nombreBusqueda', '<=', q + TOPE),
+          qLimit(tope)
+        )
+      )
+    ];
+
+    // Por apellido u otra palabra suelta, si escribio una palabra completa.
+    if (!q.includes(' ')) {
+      consultas.push(getDocs(query(C.trabajadores, where('tokens', 'array-contains', q), qLimit(tope))));
+    }
+
+    const resultados = await Promise.allSettled(consultas);
+    const vistos = new Map();
+    for (const r of resultados) {
+      if (r.status !== 'fulfilled') continue;
+      for (const d of rows(r.value)) {
+        if (!vistos.has(d.id)) vistos.set(d.id, mapEmployee(d));
+      }
+    }
+
+    let list = [...vistos.values()];
+    if (options.active !== 'all') list = list.filter((e) => e.active);
+
+    // Primero coincidencias exactas de codigo, luego por nombre.
+    return list
+      .sort((a, b) => {
+        const ea = clave(a.code) === q ? 0 : 1;
+        const eb = clave(b.code) === q ? 0 : 1;
+        if (ea !== eb) return ea - eb;
+        const pa = clave(a.code).startsWith(q) ? 0 : 1;
+        const pb = clave(b.code).startsWith(q) ? 0 : 1;
+        if (pa !== pb) return pa - pb;
+        return a.full_name.localeCompare(b.full_name);
+      })
+      .slice(0, tope);
+  }),
+
+  /**
+   * Busqueda exacta por codigo: una sola lectura, y se recuerda durante la
+   * sesion. Es el camino normal en caja, donde el cajero ya sabe el codigo.
+   */
+  employeeByCode: guard(async (code, options = {}) => {
+    const check = codigoValido(code);
+    if (!check.ok) return null;
+    if (!options.fresh && cacheTrabajadores.has(check.id)) return cacheTrabajadores.get(check.id);
+
+    const snap = await getDoc(doc(dbf, 'trabajadores', check.id));
+    if (!snap.exists()) return null;
+    const emp = mapEmployee({ id: snap.id, ...snap.data() });
+    cacheTrabajadores.set(check.id, emp);
+    return emp;
+  }),
+
+  employee: guard(async (id) => {
+    const snap = await getDoc(doc(dbf, 'trabajadores', id));
+    if (!snap.exists()) throw new Error('Trabajador no encontrado.');
+    const emp = mapEmployee({ id: snap.id, ...snap.data() });
+    cacheTrabajadores.set(clave(emp.code), emp);
+    return emp;
   }),
 
   createEmployee: guard(async (data) => {
-    const dup = rows(await getDocs(query(C.trabajadores, where('codigo', '==', data.code.trim().toUpperCase()))));
-    if (dup.length) throw new Error('Ese codigo de empleado ya esta registrado.');
-    const ref = await addDoc(C.trabajadores, {
-      codigo: data.code.trim().toUpperCase(),
-      nombre: data.full_name.trim(),
-      depto: data.department?.trim() || null,
-      limite: round(data.credit_limit),
-      saldo: 0,
-      activo: data.active !== false,
-      creado: nowISO(),
-      creadoPor: session.user.id
+    const check = codigoValido(data.code);
+    if (!check.ok) throw new Error(check.error);
+    const nombre = String(data.full_name || '').trim();
+    if (!nombre) throw new Error('Escribe el nombre completo.');
+
+    const ref = doc(dbf, 'trabajadores', check.id);
+
+    // La transaccion evita que dos altas simultaneas pisen el mismo codigo.
+    await runTransaction(dbf, async (tx) => {
+      const snap = await tx.get(ref);
+      if (snap.exists()) throw new Error(`El codigo ${check.id} ya esta registrado.`);
+      tx.set(ref, {
+        codigo: check.id,
+        nombre,
+        nombreBusqueda: clave(nombre),
+        tokens: tokens(nombre),
+        depto: data.department?.trim() || null,
+        limite: round(data.credit_limit),
+        saldo: 0,
+        activo: data.active !== false,
+        creado: nowISO(),
+        creadoPor: session.user.id
+      });
     });
-    log('crear_trabajador', 'trabajadores', ref.id, `${data.code} ${data.full_name}`);
-    return { id: ref.id };
+
+    log('crear_trabajador', 'trabajadores', check.id, nombre);
+    return { id: check.id };
   }),
 
   updateEmployee: guard(async (id, data) => {
     const ref = doc(dbf, 'trabajadores', id);
     const prev = (await getDoc(ref)).data();
+    const nombre = (data.full_name ?? prev.nombre).trim();
+    if (data.code && clave(data.code) !== clave(prev.codigo)) {
+      throw new Error(
+        'El codigo no se puede cambiar: es el identificador del trabajador y su historial cuelga de el. Da de baja esta cuenta y crea otra.'
+      );
+    }
     await updateDoc(ref, {
-      codigo: (data.code ?? prev.codigo).trim().toUpperCase(),
-      nombre: (data.full_name ?? prev.nombre).trim(),
+      codigo: prev.codigo,
+      nombre,
+      nombreBusqueda: clave(nombre),
+      tokens: tokens(nombre),
       depto: data.department !== undefined ? data.department.trim() || null : prev.depto ?? null,
       limite: data.credit_limit !== undefined ? round(data.credit_limit) : round(prev.limite),
       saldo: round(prev.saldo),
       activo: data.active !== undefined ? !!data.active : prev.activo !== false
     });
+    olvidar(prev.codigo);
     log('editar_trabajador', 'trabajadores', id);
     return { id };
   }),
@@ -489,6 +647,9 @@ export const api = {
       tx.update(ref, { ...e, saldo: balance });
       tx.set(doc(C.movCuenta), {
         trabajadorId: id,
+        trabajadorNombre: e.nombre,
+        trabajadorCodigo: e.codigo,
+        trabajadorDepto: e.depto || null,
         periodoId: period?.id || null,
         tipo: 'abono',
         monto: -amount,
@@ -498,6 +659,7 @@ export const api = {
         usuario: session.user.full_name,
         fecha: nowISO()
       });
+      olvidar(e.codigo);
       log('abono', 'trabajadores', id, String(amount));
       return { ok: true, balance };
     });
@@ -519,6 +681,9 @@ export const api = {
       tx.update(ref, { ...e, saldo: balance });
       tx.set(doc(C.movCuenta), {
         trabajadorId: id,
+        trabajadorNombre: e.nombre,
+        trabajadorCodigo: e.codigo,
+        trabajadorDepto: e.depto || null,
         periodoId: period?.id || null,
         tipo: 'ajuste',
         monto: amount,
@@ -528,6 +693,7 @@ export const api = {
         usuario: session.user.full_name,
         fecha: nowISO()
       });
+      olvidar(e.codigo);
       log('ajuste_saldo', 'trabajadores', id, `${amount} / ${data.note}`);
       return { ok: true, balance };
     });
@@ -678,6 +844,9 @@ export const api = {
         tx.update(empRef, { ...employee, saldo: newBalance });
         tx.set(doc(C.movCuenta), {
           trabajadorId: payload.employee_id,
+          trabajadorNombre: employee.nombre,
+          trabajadorCodigo: employee.codigo,
+          trabajadorDepto: employee.depto || null,
           periodoId: period.id,
           ventaId: saleRef.id,
           folio: record.folio,
@@ -694,6 +863,7 @@ export const api = {
       return mapSale({ id: saleRef.id, ...record });
     });
 
+    if (sale.employee_code) olvidar(sale.employee_code);
     log('venta', 'ventas', sale.id, `${sale.method} ${sale.total}`);
     return sale;
   }),
@@ -740,6 +910,9 @@ export const api = {
         tx.update(empRef, { ...e, saldo: Math.max(0, balance) });
         tx.set(doc(C.movCuenta), {
           trabajadorId: v.trabajadorId,
+          trabajadorNombre: e.nombre,
+          trabajadorCodigo: e.codigo,
+          trabajadorDepto: e.depto || null,
           periodoId: period?.id || null,
           ventaId: id,
           folio: v.folio,
@@ -762,6 +935,7 @@ export const api = {
       });
     });
 
+    cacheTrabajadores.clear();
     log('anular_venta', 'ventas', id, reason);
     return api.sale(id);
   }),
@@ -812,13 +986,30 @@ export const api = {
     const period = mapPeriod({ id: snap.id, ...snap.data() });
 
     const moves = rows(await getDocs(query(C.movCuenta, where('periodoId', '==', id)))).map(mapAccountMove);
-    const employees = await api.employees({ active: 'all' });
+
+    // Los movimientos llevan el nombre grabado, asi que el reporte no necesita
+    // releer la planilla. Solo se consultan los pocos que quedaron sin dato.
+    const faltantes = [...new Set(moves.filter((m) => !m.employee && m.employee_id).map((m) => m.employee_id))];
+    const rescatados = new Map();
+    for (const empId of faltantes.slice(0, 200)) {
+      try {
+        const snap = await getDoc(doc(dbf, 'trabajadores', empId));
+        if (snap.exists()) rescatados.set(empId, mapEmployee({ id: snap.id, ...snap.data() }));
+      } catch {
+        /* si no se puede leer, la fila sale con el identificador */
+      }
+    }
 
     const grouped = new Map();
     for (const m of moves) {
       if (!['cargo', 'abono', 'ajuste'].includes(m.type)) continue;
-      const emp = employees.find((e) => e.id === m.employee_id);
-      if (!emp) continue;
+      const viejo = rescatados.get(m.employee_id);
+      const emp = {
+        id: m.employee_id,
+        code: m.employee_code || viejo?.code || m.employee_id.slice(0, 6),
+        full_name: m.employee || viejo?.full_name || 'Trabajador sin nombre',
+        department: m.department || viejo?.department || ''
+      };
       const acc =
         grouped.get(emp.id) ||
         { id: emp.id, code: emp.code, full_name: emp.full_name, department: emp.department, cargos: 0, abonos: 0, ajustes: 0, consumos: 0 };
@@ -864,6 +1055,9 @@ export const api = {
       batch.update(ref, { ...e, saldo: balance });
       batch.set(doc(C.movCuenta), {
         trabajadorId: row.id,
+        trabajadorNombre: e.nombre,
+        trabajadorCodigo: e.codigo,
+        trabajadorDepto: e.depto || null,
         periodoId: id,
         tipo: 'descuento',
         monto: -row.total,
@@ -922,8 +1116,8 @@ export const api = {
     const sales = (await api.sales({ from: params.from, to: params.to, limit: 1000 })).filter(
       (s) => s.status === 'completada'
     );
-    const employees = await api.employees();
     const products = await api.products();
+    const cartera = await api.carteraTotal();
 
     const cash = sales.filter((s) => s.method === 'efectivo');
     const credit = sales.filter((s) => s.method === 'credito');
@@ -957,14 +1151,31 @@ export const api = {
       efectivo: { n: cash.length, total: sum(cash) },
       credito: { n: credit.length, total: sum(credit) },
       ventas: { n: sales.length, total: sum(sales) },
-      cartera: round(employees.reduce((a, b) => a + b.balance, 0)),
-      deudores: employees.filter((e) => e.balance > 0.009).length,
+      cartera: cartera.total,
+      deudores: cartera.deudores,
       por_hora: [...byHour.entries()].sort().map(([hour, total]) => ({ hour, total })),
       top: [...byProduct.values()].sort((a, b) => b.qty - a.qty).slice(0, 10),
       por_categoria: [...byCategory.entries()].map(([category, total]) => ({ category, total })).sort((a, b) => b.total - a.total),
       bajo_minimo: products.filter((p) => p.track_stock && p.stock <= p.min_stock),
       periodo: await api.openPeriod()
     };
+  }),
+
+  /**
+   * Saldo acumulado y cuantos deben. Se resuelve con una agregacion en el
+   * servidor: no importa si hay diez trabajadores o diez mil.
+   */
+  carteraTotal: guard(async () => {
+    const conSaldo = query(C.trabajadores, where('saldo', '>', 0.009));
+    try {
+      const snap = await getAggregateFromServer(conSaldo, { total: sum('saldo'), deudores: count() });
+      return { total: round(snap.data().total), deudores: snap.data().deudores };
+    } catch {
+      // Si la agregacion no esta disponible, se cuenta sobre los que deben,
+      // que siempre son muchos menos que la planilla completa.
+      const list = rows(await getDocs(query(conSaldo, orderBy('saldo', 'desc'), qLimit(500)))).map(mapEmployee);
+      return { total: round(list.reduce((a, b) => a + b.balance, 0)), deudores: list.length };
+    }
   }),
 
   inventoryValue: guard(async () => {
@@ -1058,6 +1269,137 @@ export const api = {
     return api.settings();
   }),
 
+  /**
+   * Alta masiva desde archivo. Con planillas de miles de personas, cargarlas a
+   * mano no es opcion. Se escribe en lotes y se avisa del avance.
+   */
+  importEmployees: guard(async (records, onProgress) => {
+    // Se normaliza y se descartan los repetidos dentro del mismo archivo.
+    const porId = new Map();
+    let invalidos = 0;
+    for (const r of records) {
+      const check = codigoValido(r.code);
+      const nombre = String(r.full_name || '').trim();
+      if (!check.ok || !nombre) {
+        invalidos++;
+        continue;
+      }
+      if (porId.has(check.id)) continue;
+      porId.set(check.id, {
+        codigo: check.id,
+        nombre,
+        nombreBusqueda: clave(nombre),
+        tokens: tokens(nombre),
+        depto: String(r.department || '').trim() || null,
+        limite: round(r.credit_limit),
+        saldo: 0,
+        activo: true,
+        creado: nowISO(),
+        creadoPor: session.user.id
+      });
+    }
+
+    const ids = [...porId.keys()];
+
+    // Se pregunta por los identificadores de treinta en treinta en vez de
+    // consultar uno por uno.
+    const yaExisten = new Set();
+    for (let i = 0; i < ids.length; i += 30) {
+      const grupo = ids.slice(i, i + 30);
+      const snap = await getDocs(query(C.trabajadores, where(documentId(), 'in', grupo)));
+      for (const d of snap.docs) yaExisten.add(d.id);
+      onProgress?.(Math.min(i + 30, ids.length), ids.length, 'revisando');
+    }
+
+    let creados = 0;
+    let lote = writeBatch(dbf);
+    let ops = 0;
+
+    for (const [id, datos] of porId) {
+      if (yaExisten.has(id)) continue;
+      lote.set(doc(dbf, 'trabajadores', id), datos);
+      creados++;
+      ops++;
+      if (ops >= 400) {
+        await lote.commit();
+        lote = writeBatch(dbf);
+        ops = 0;
+        onProgress?.(creados, ids.length, 'creando');
+      }
+    }
+    if (ops) await lote.commit();
+
+    const repetidos = yaExisten.size;
+    log('importar_trabajadores', 'trabajadores', null, `${creados} creados, ${repetidos} repetidos`);
+    return { creados, repetidos, invalidos };
+  }),
+
+  /**
+   * Rellena los campos de busqueda en registros creados antes de que existieran.
+   * Se corre una sola vez desde Ajustes.
+   */
+  reindexEmployees: guard(async (onProgress) => {
+    let cursor = null;
+    let revisados = 0;
+    let corregidos = 0;
+    let omitidos = 0;
+
+    for (let vuelta = 0; vuelta < 200; vuelta++) {
+      const clauses = [orderBy(documentId()), qLimit(300)];
+      if (cursor) clauses.splice(1, 0, startAfter(cursor));
+      const snap = await getDocs(query(C.trabajadores, ...clauses));
+      if (snap.empty) break;
+
+      let lote = writeBatch(dbf);
+      let ops = 0;
+      for (const d of snap.docs) {
+        const data = d.data();
+        revisados++;
+        const esperado = clave(data.nombre);
+        if (data.nombreBusqueda === esperado && Array.isArray(data.tokens)) continue;
+        lote.update(d.ref, {
+          ...data,
+          codigo: d.id,
+          nombreBusqueda: esperado,
+          tokens: tokens(data.nombre)
+        });
+        corregidos++;
+        ops++;
+      }
+      if (ops) {
+        try {
+          await lote.commit();
+        } catch {
+          // Un solo documento fuera de regla (por ejemplo con saldo sobre el
+          // limite) tumbaria el lote entero, asi que se reintenta uno por uno.
+          corregidos -= ops;
+          for (const d of snap.docs) {
+            const data = d.data();
+            if (data.nombreBusqueda === clave(data.nombre) && Array.isArray(data.tokens)) continue;
+            try {
+              await updateDoc(d.ref, {
+                ...data,
+                codigo: d.id,
+                nombreBusqueda: clave(data.nombre),
+                tokens: tokens(data.nombre)
+              });
+              corregidos++;
+            } catch {
+              omitidos++;
+            }
+          }
+        }
+      }
+
+      cursor = snap.docs[snap.docs.length - 1].id;
+      onProgress?.(revisados, corregidos);
+      if (snap.size < 300) break;
+    }
+
+    log('reindexar_trabajadores', 'trabajadores', null, `${corregidos} de ${revisados}, ${omitidos} omitidos`);
+    return { revisados, corregidos, omitidos };
+  }),
+
   /** Catalogo de arranque para probar la plataforma. */
   loadSampleData: guard(async () => {
     const cats = [
@@ -1131,9 +1473,11 @@ export const api = {
       ['E-1004', 'Jorge Alberto Nunez', 'Mantenimiento', 1200]
     ];
     for (const [codigo, nombre, depto, limite] of emps) {
-      await addDoc(C.trabajadores, {
+      await setDoc(doc(dbf, 'trabajadores', codigo), {
         codigo,
         nombre,
+        nombreBusqueda: clave(nombre),
+        tokens: tokens(nombre),
         depto,
         limite,
         saldo: 0,
