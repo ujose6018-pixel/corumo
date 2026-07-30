@@ -1,7 +1,17 @@
-import { session, login, logout, watchAuth, loadProfile } from './firebase.js';
+import {
+  session,
+  login,
+  logout,
+  watchAuth,
+  loadProfile,
+  needsSetup,
+  createFirstAdmin,
+  sha256,
+  SETUP_KEY_HASH,
+  LOGIN_DOMAIN
+} from './firebase.js';
 import { api } from './store.js';
 import { h, icon, ICONS, field, input, checkbox, toast, L, dateOnly } from './ui.js';
-import { needsSetup, renderSetup } from './setup.js';
 
 const root = document.getElementById('root');
 
@@ -37,32 +47,78 @@ const COLLAPSE_KEY = 'cafeteria.panel';
 
 /* ================= acceso ================= */
 
-function renderGate() {
-  const usuario = input({ value: session.remembered, placeholder: 'usuario', autocomplete: 'username' });
-  const clave = input({ type: 'password', placeholder: 'contrasena', autocomplete: 'current-password' });
-  const recordar = checkbox('Recordar mi usuario en este equipo', !!session.remembered);
+/**
+ * Una sola pantalla para las dos situaciones. Si la base todavia no tiene
+ * administrador, las credenciales que se escriban aqui crean esa cuenta.
+ */
+function renderGate(firstRun = false) {
+  const usuario = input({
+    value: firstRun ? '' : session.remembered,
+    placeholder: 'usuario',
+    autocomplete: 'username'
+  });
+  const clave = input({
+    type: 'password',
+    placeholder: firstRun ? 'define tu contrasena' : 'contrasena',
+    autocomplete: firstRun ? 'new-password' : 'current-password'
+  });
+  const clave2 = input({ type: 'password', placeholder: 'repite la contrasena', autocomplete: 'new-password' });
+  const nombre = input({ value: 'Administrador', placeholder: 'Nombre completo' });
+  const llave = input({ type: 'password', placeholder: 'clave de instalacion', autocomplete: 'off' });
+  const recordar = checkbox('Recordar mi usuario en este equipo', firstRun ? true : !!session.remembered);
   const errorBox = h('div', { class: 'error-note', hidden: true });
-  const boton = h('button', { class: 'btn btn--primary btn--lg btn--block', text: 'Entrar' });
+  const boton = h('button', {
+    class: 'btn btn--primary btn--lg btn--block',
+    text: firstRun ? 'Crear administrador y entrar' : 'Entrar'
+  });
+
+  const etiqueta = boton.textContent;
+  const fail = (msg) => {
+    errorBox.textContent = msg;
+    errorBox.hidden = false;
+    boton.disabled = false;
+    boton.textContent = etiqueta;
+  };
 
   const submit = async () => {
     errorBox.hidden = true;
     boton.disabled = true;
-    boton.textContent = 'Verificando…';
+    boton.textContent = firstRun ? 'Creando…' : 'Verificando…';
+    const recordarme = recordar.querySelector('input').checked;
+
     try {
-      await login(usuario.value.trim(), clave.value, recordar.querySelector('input').checked);
+      if (firstRun) {
+        if (SETUP_KEY_HASH && (await sha256(llave.value.trim())) !== SETUP_KEY_HASH) {
+          return fail('La clave de instalacion no es correcta.');
+        }
+        if (!/^[a-zA-Z0-9._@-]{3,40}$/.test(usuario.value.trim())) {
+          return fail('El usuario admite de 3 a 40 letras, numeros, punto, guion o arroba.');
+        }
+        if (clave.value.length < 6) return fail('La contrasena necesita al menos 6 caracteres.');
+        if (clave.value !== clave2.value) return fail('Las dos contrasenas no coinciden.');
+        if (!nombre.value.trim()) return fail('Escribe el nombre que aparecera en los vales.');
+
+        await createFirstAdmin({
+          username: usuario.value.trim(),
+          password: clave.value,
+          fullName: nombre.value.trim(),
+          remember: recordarme
+        });
+      } else {
+        await login(usuario.value.trim(), clave.value, recordarme);
+      }
       renderShell();
     } catch (err) {
-      errorBox.textContent = translate(err);
-      errorBox.hidden = false;
-      boton.disabled = false;
-      boton.textContent = 'Entrar';
-      clave.value = '';
-      clave.focus();
+      fail(translate(err));
+      if (!firstRun) {
+        clave.value = '';
+        clave.focus();
+      }
     }
   };
 
   boton.addEventListener('click', submit);
-  for (const el of [usuario, clave]) {
+  for (const el of [usuario, clave, clave2, nombre, llave]) {
     el.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') submit();
     });
@@ -75,31 +131,47 @@ function renderGate() {
       h(
         'div',
         { class: 'gate__art' },
-        h('div', { class: 'eyebrow', style: 'color:#7fc9a5', text: 'Cafeteria de empresa' }),
-        h('div', { class: 'gate__mark' }, 'Caja y', h('span', null, 'credito')),
+        h('div', { class: 'eyebrow', style: 'color:#7fc9a5', text: firstRun ? 'Primer arranque' : 'Cafeteria de empresa' }),
+        firstRun
+          ? h('div', { class: 'gate__mark' }, 'Instalar', h('span', null, 'la caja'))
+          : h('div', { class: 'gate__mark' }, 'Caja y', h('span', null, 'credito')),
         h(
           'div',
           { class: 'gate__note' },
-          'Cobro en efectivo o cargo a la cuenta del trabajador. ',
-          'Cada consumo queda anotado y al cerrar la quincena sale el archivo de descuentos para planilla.'
+          firstRun
+            ? 'Esta pantalla aparece una sola vez. La cuenta que crees aqui queda como administradora y podra dar de alta a los cajeros. Despues, esta puerta se cierra sola.'
+            : 'Cobro en efectivo o cargo a la cuenta del trabajador. Cada consumo queda anotado y al cerrar el corte sale el archivo de descuentos para planilla.'
         )
       ),
       h(
         'div',
         { class: 'gate__panel' },
-        h('h1', { text: 'Iniciar sesion' }),
-        h('p', { class: 'lede', text: 'Escribe el usuario que te dio el administrador.' }),
+        h('h1', { text: firstRun ? 'Crear administrador' : 'Iniciar sesion' }),
+        h('p', {
+          class: 'lede',
+          text: firstRun
+            ? 'Escribe el usuario y la contrasena con los que vas a entrar de ahora en adelante.'
+            : 'Escribe el usuario que te dio el administrador.'
+        }),
         errorBox,
-        field('Usuario', usuario),
+        field('Usuario', usuario, firstRun ? `Solo el usuario, sin correo. Se guarda como usuario@${LOGIN_DOMAIN}` : null),
+        firstRun && SETUP_KEY_HASH ? field('Clave de instalacion', llave) : null,
         field('Contrasena', clave),
+        firstRun ? field('Repetir contrasena', clave2) : null,
+        firstRun ? field('Nombre completo', nombre, 'Aparece en los vales y en la bitacora') : null,
         recordar,
         boton,
-        h('div', { class: 'hint', text: 'Si olvidaste tu contrasena, pidele al administrador que te envie el correo de restablecimiento.' })
+        h('div', {
+          class: 'hint',
+          text: firstRun
+            ? 'La contrasena la guarda Firebase Authentication. No queda en el codigo ni en Firestore.'
+            : 'Si olvidaste tu contrasena, pidele al administrador que te envie el correo de restablecimiento.'
+        })
       )
     )
   );
 
-  (session.remembered ? clave : usuario).focus();
+  (firstRun || !session.remembered ? usuario : clave).focus();
 }
 
 function translate(err) {
@@ -110,6 +182,17 @@ function translate(err) {
     }
     if (code === 'auth/too-many-requests') return 'Demasiados intentos. Espera un momento antes de volver a probar.';
     if (code === 'auth/network-request-failed') return 'Sin conexion. Revisa la red e intenta de nuevo.';
+  }
+  if (code === 'auth/email-already-in-use') return 'Ese usuario ya tiene cuenta de acceso.';
+  if (code === 'auth/weak-password') return 'La contrasena necesita al menos 6 caracteres.';
+  if (code === 'auth/operation-not-allowed') {
+    return 'Activa el proveedor Correo/contrasena en Firebase Authentication.';
+  }
+  if (code === 'auth/unauthorized-domain') {
+    return 'Agrega este dominio en Authentication → Settings → Authorized domains.';
+  }
+  if (code === 'permission-denied') {
+    return 'Firestore rechazo la operacion. Revisa que las reglas esten publicadas y que no exista ya un administrador.';
   }
   return err?.message || 'No se pudo iniciar sesion.';
 }
@@ -287,7 +370,7 @@ async function gateOrSetup() {
   if (!setupChecked) {
     setupChecked = true;
     if (await needsSetup()) {
-      renderSetup(root, () => renderShell());
+      renderGate(true);
       return;
     }
   }

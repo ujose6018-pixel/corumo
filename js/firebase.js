@@ -20,7 +20,8 @@ import {
   setDoc,
   updateDoc,
   collection,
-  addDoc
+  addDoc,
+  writeBatch
 } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js';
 
 export const firebaseConfig = {
@@ -33,14 +34,16 @@ export const firebaseConfig = {
 };
 
 /**
- * Huella SHA-256 de la clave de instalacion. Se usa una sola vez, en el primer
- * arranque, para que un extrano no gane la carrera y se cree el administrador.
- * No es la contrasena del admin: esa la guarda Firebase Authentication.
- * Para cambiarla, en la consola del navegador:
- *   crypto.subtle.digest('SHA-256', new TextEncoder().encode('TU CLAVE'))
+ * Clave opcional para el primer ingreso. Vacia significa que la primera persona
+ * que entre queda como administradora con el usuario y la contrasena que escriba.
+ *
+ * Si prefieres una puerta con llave, pon aqui la huella SHA-256 de una frase.
+ * En la consola del navegador:
+ *   crypto.subtle.digest('SHA-256', new TextEncoder().encode('TU FRASE'))
  *     .then(b => console.log([...new Uint8Array(b)].map(x => x.toString(16).padStart(2,'0')).join('')))
+ * La huella no es reversible: quien lea el codigo no puede sacar la frase.
  */
-export const SETUP_KEY_HASH = '131ba158c3d7d9021c3ae05b9175feb99ce1d08789494af36325e4f06eeaaeb2';
+export const SETUP_KEY_HASH = '';
 
 /** Dominio interno para que el personal escriba solo su usuario, no un correo largo. */
 export const LOGIN_DOMAIN = 'corumo2.local';
@@ -98,6 +101,63 @@ export async function login(username, password, remember) {
   updateDoc(doc(dbf, 'usuarios', cred.user.uid), { ultimoIngreso: new Date().toISOString() }).catch(() => {});
   log('login', 'usuarios', cred.user.uid);
   return profile;
+}
+
+/** Mientras no exista el centinela, la base todavia no tiene administrador. */
+export async function needsSetup() {
+  try {
+    const snap = await getDoc(doc(dbf, 'config', 'instalacion'));
+    return !snap.exists();
+  } catch {
+    // Si ni leerlo se puede, el problema es de reglas o de red: que siga el login normal.
+    return false;
+  }
+}
+
+export async function sha256(text) {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Primer ingreso: crea la cuenta de acceso con las credenciales escritas y la
+ * deja como administradora. El perfil y el centinela se escriben en un solo
+ * lote porque las reglas exigen que vayan juntos; despues de eso la puerta
+ * queda cerrada y solo un administrador puede crear usuarios.
+ */
+export async function createFirstAdmin({ username, password, fullName, remember }) {
+  await setPersistence(auth, remember ? browserLocalPersistence : browserSessionPersistence);
+  const email = toEmail(username);
+
+  let uid;
+  try {
+    const cred = await createUserWithEmailAndPassword(auth, email, password);
+    uid = cred.user.uid;
+  } catch (err) {
+    // Si la cuenta quedo a medias en un intento anterior, se reutiliza.
+    if (err.code !== 'auth/email-already-in-use') throw err;
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    uid = cred.user.uid;
+  }
+
+  const batch = writeBatch(dbf);
+  batch.set(doc(dbf, 'usuarios', uid), {
+    usuario: username.trim(),
+    nombre: fullName.trim(),
+    rol: 'admin',
+    activo: true,
+    creado: new Date().toISOString()
+  });
+  batch.set(doc(dbf, 'config', 'instalacion'), {
+    completada: true,
+    fecha: new Date().toISOString(),
+    porUid: uid
+  });
+  await batch.commit();
+
+  if (remember) localStorage.setItem(REMEMBER_KEY, username.trim());
+  return loadProfile(auth.currentUser);
 }
 
 export async function logout() {
